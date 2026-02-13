@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Harlem Runs - Extended Edition</title>
+    <style>
+        body { margin: 0; background: #050505; overflow: hidden; font-family: 'Segoe UI', sans-serif; touch-action: none; }
+        canvas { display: block; margin: 0 auto; background: linear-gradient(#1a1a2e, #16213e); }
+        #ui { position: absolute; top: 20px; left: 20px; color: #00d2ff; pointer-events: none; text-shadow: 2px 2px #000; }
+        .stat { font-size: 28px; font-weight: bold; }
+        #gameOver { 
+            display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.9); color: white; padding: 40px; text-align: center; border: 2px solid #00d2ff; border-radius: 15px;
+        }
+        button { background: #00d2ff; border: none; padding: 10px 25px; font-size: 20px; cursor: pointer; border-radius: 5px; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div>COINS: <span id="coinVal" class="stat">0</span></div>
+        <div>BEST: <span id="bestVal" class="stat">0</span></div>
+    </div>
+
+    <div id="gameOver">
+        <h1>WASTED</h1>
+        <p>You hit an obstacle in Harlem.</p>
+        <div>SCORE: <span id="finalScore" class="stat">0</span></div>
+        <button onclick="location.reload()">RUN AGAIN</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Game Constants
+        let gameActive = true;
+        let coins = 0;
+        let speed = 8;
+        let laneWidth;
+        let currentLane = 1; 
+        let highScore = localStorage.getItem('harlemHigh') || 0;
+
+        const player = {
+            y: 0,
+            state: 'run', // run, jump, roll
+            timer: 0,
+            width: 45,
+            height: 80,
+            color: '#00d2ff'
+        };
+
+        let obstacles = [];
+        let particles = [];
+        let frames = 0;
+
+        // Audio Context
+        const audio = new (window.AudioContext || window.webkitAudioContext)();
+        function playSfx(f, t, d, v=0.1) {
+            try {
+                const o = audio.createOscillator();
+                const g = audio.createGain();
+                o.type = t; o.frequency.setValueAtTime(f, audio.currentTime);
+                g.gain.setValueAtTime(v, audio.currentTime);
+                g.gain.exponentialRampToValueAtTime(0.01, audio.currentTime + d);
+                o.connect(g); g.connect(audio.destination);
+                o.start(); o.stop(audio.currentTime + d);
+            } catch(e) {}
+        }
+
+        function init() {
+            canvas.width = Math.min(window.innerWidth, 450);
+            canvas.height = window.innerHeight;
+            laneWidth = canvas.width / 3;
+            player.y = canvas.height - 150;
+            document.getElementById('bestVal').innerText = highScore;
+        }
+
+        // Controls
+        function move(dir) {
+            if (!gameActive) return;
+            if (dir === 'L' && currentLane > 0) { currentLane--; playSfx(300, 'square', 0.1); }
+            if (dir === 'R' && currentLane < 2) { currentLane++; playSfx(350, 'square', 0.1); }
+            if (dir === 'U' && player.state === 'run') { player.state = 'jump'; player.timer = 30; playSfx(600, 'sine', 0.2); }
+            if (dir === 'D' && player.state === 'run') { player.state = 'roll'; player.timer = 30; playSfx(150, 'triangle', 0.2); }
+        }
+
+        window.addEventListener('keydown', e => {
+            if (e.key === "ArrowLeft") move('L');
+            if (e.key === "ArrowRight") move('R');
+            if (e.key === "ArrowUp") move('U');
+            if (e.key === "ArrowDown") move('D');
+        });
+
+        let tsX, tsY;
+        window.addEventListener('touchstart', e => { tsX = e.touches[0].clientX; tsY = e.touches[0].clientY; });
+        window.addEventListener('touchend', e => {
+            let dx = e.changedTouches[0].clientX - tsX;
+            let dy = e.changedTouches[0].clientY - tsY;
+            if (Math.abs(dx) > Math.abs(dy)) {
+                if (dx > 30) move('R'); else if (dx < -30) move('L');
+            } else {
+                if (dy > 30) move('D'); else if (dy < -30) move('U');
+            }
+        });
+
+        function spawn() {
+            if (frames % 60 === 0) {
+                const lane = Math.floor(Math.random() * 3);
+                const isHigh = Math.random() > 0.5;
+                obstacles.push({
+                    x: lane * laneWidth,
+                    y: -100,
+                    type: isHigh ? 'high' : 'low', // high = roll under, low = jump over
+                    w: laneWidth,
+                    h: isHigh ? 20 : 50,
+                    collected: false
+                });
+            }
+            if (frames % 40 === 0) {
+                const lane = Math.floor(Math.random() * 3);
+                particles.push({ x: lane * laneWidth + laneWidth/2, y: -50, type: 'coin' });
+            }
+        }
+
+        function update() {
+            if (!gameActive) return;
+            frames++;
+            speed += 0.001;
+
+            if (player.timer > 0) player.timer--;
+            else player.state = 'run';
+
+            obstacles.forEach((obs, i) => {
+                obs.y += speed;
+                let px = currentLane * laneWidth;
+                if (px === obs.x && obs.y + obs.h > player.y && obs.y < player.y + player.height) {
+                    if (obs.type === 'high' && player.state !== 'roll') endGame();
+                    if (obs.type === 'low' && player.state !== 'jump') endGame();
+                }
+                if (obs.y > canvas.height) obstacles.splice(i, 1);
+            });
+
+            particles.forEach((p, i) => {
+                p.y += speed;
+                let px = currentLane * laneWidth;
+                if (p.type === 'coin' && px < p.x && px + laneWidth > p.x && p.y > player.y && p.y < player.y + player.height) {
+                    coins++;
+                    document.getElementById('coinVal').innerText = coins;
+                    playSfx(800, 'sine', 0.1, 0.05);
+                    particles.splice(i, 1);
+                }
+                if (p.y > canvas.height) particles.splice(i, 1);
+            });
+
+            spawn();
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw Lanes
+            ctx.strokeStyle = "rgba(255,255,255,0.1)";
+            for(let i=1; i<3; i++) {
+                ctx.beginPath(); ctx.moveTo(i * laneWidth, 0); ctx.lineTo(i * laneWidth, canvas.height); ctx.stroke();
+            }
+
+            // Draw Player
+            ctx.fillStyle = player.color;
+            let drawH = player.height;
+            let drawY = player.y;
+            if (player.state === 'jump') drawY -= 60;
+            if (player.state === 'roll') drawH = 40, drawY += 40;
+            
+            ctx.fillRect(currentLane * laneWidth + (laneWidth - player.width)/2, drawY, player.width, drawH);
+
+            // Draw Obstacles
+            obstacles.forEach(obs => {
+                ctx.fillStyle = obs.type === 'high' ? '#ff9f43' : '#ee5253';
+                if (obs.type === 'high') ctx.fillRect(obs.x + 5, obs.y, obs.w - 10, 20);
+                else ctx.fillRect(obs.x + 10, obs.y + 20, obs.w - 20, 30);
+            });
+
+            // Draw Coins
+            ctx.fillStyle = '#feca57';
+            particles.forEach(p => {
+                if (p.type === 'coin') {
+                    ctx.beginPath(); ctx.arc(p.x, p.y, 10, 0, Math.PI*2); ctx.fill();
+                }
+            });
+
+            update();
+            if (gameActive) requestAnimationFrame(draw);
+        }
+
+        function endGame() {
+            gameActive = false;
+            if (coins > highScore) localStorage.setItem('harlemHigh', coins);
+            document.getElementById('finalScore').innerText = coins;
+            document.getElementById('gameOver').style.display = 'block';
+            playSfx(100, 'sawtooth', 0.5);
+        }
+
+        init();
+        draw();
+    </script>
+</body>
+</html>
